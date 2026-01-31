@@ -538,6 +538,11 @@ WITH polys AS (
     AND route = '{direction}'
     AND mtfcc = 'S1100'
     AND mm BETWEEN {start_mm} AND {end_mm}
+    AND (
+      active_date IS NULL
+      OR deactive_date IS NULL
+      OR TIMESTAMP('{start_date}') BETWEEN active_date AND deactive_date
+    )
 ),
 
 events AS (
@@ -626,7 +631,7 @@ function formatQuery(template, params) {
     let query = template;
     for (const key in params) {
         const regex = new RegExp(`\\{${key}\\}`, 'g');
-        query = query.replace(regex, params[key]);
+        query = query.replace(regex, params[key]); 
     }
     return query;
 }
