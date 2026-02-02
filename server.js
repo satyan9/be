@@ -631,7 +631,7 @@ function formatQuery(template, params) {
     let query = template;
     for (const key in params) {
         const regex = new RegExp(`\\{${key}\\}`, 'g');
-        query = query.replace(regex, params[key]); 
+        query = query.replace(regex, params[key]);
     }
     return query;
 }
@@ -686,6 +686,72 @@ app.post('/generate_heatmap_events', upload.none(), async (req, res) => {
         res.json(rows);
     } catch (e) {
         console.error(e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/generate_heatmap_vizzion', upload.none(), async (req, res) => {
+    try {
+        const { start_date, end_date, route, start_mm, end_mm, state, timezone } = req.body;
+        const stateParam = state || 'IN';
+        const tzOffset = TZ_OFFSETS[timezone || 'EST'] || '-05:00';
+
+        // Match both directions, e.g. 'I-70 E' and 'I-70 W'
+        const routeE = `${route} E`;
+        const routeW = `${route} W`;
+
+        const query = `
+        SELECT
+            UNIX_SECONDS(time) as bin,
+            state,
+            route as direction,
+            mm
+        FROM \`tmc-dashboards.vizzion.vizzion_drives\`
+        WHERE state = @state
+          AND mm BETWEEN @min_mm AND @max_mm
+          AND TRIM(route) IN (@routeE, @routeW)
+          AND time >= TIMESTAMP(@start_date, @tzOffset)
+          AND time < TIMESTAMP(@end_date, @tzOffset)
+        ORDER BY time ASC
+        `;
+
+        const options = {
+            query: query,
+            params: {
+                state: stateParam,
+                min_mm: Math.min(parseFloat(start_mm), parseFloat(end_mm)),
+                max_mm: Math.max(parseFloat(start_mm), parseFloat(end_mm)),
+                routeE: routeE,
+                routeW: routeW,
+                start_date: start_date,
+                end_date: moment(end_date).add(1, 'day').format('YYYY-MM-DD'),
+                tzOffset: tzOffset
+            }
+        };
+
+        const [job] = await bigquery.createQueryJob(options);
+        const [rows] = await job.getQueryResults();
+
+        const [metadata] = await job.getMetadata();
+        const stats = metadata.statistics;
+        const bytesVal = parseInt(stats.totalBytesBilled || stats.totalBytesProcessed || '0');
+        const costVal = (bytesVal / 1099511627776) * 6.25;
+
+        // Map rows to include event_type
+        const mappedRows = rows.map(r => ({
+            ...r,
+            event_type: 'vizzion'
+        }));
+
+        mappedRows.push({
+            meta: true,
+            bytes: bytesVal,
+            cost: costVal
+        });
+
+        res.json(mappedRows);
+    } catch (e) {
+        console.error("Vizzion Query Error:", e);
         res.status(500).json({ error: e.message });
     }
 });
