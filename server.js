@@ -695,10 +695,18 @@ app.post('/generate_heatmap_vizzion', upload.none(), async (req, res) => {
         const { start_date, end_date, direction, start_mm, end_mm, state, timezone } = req.body;
         const stateParam = state || 'IN';
         const tzOffset = TZ_OFFSETS[timezone] || '-05:00';
+        const binSeconds = 60;
 
         const query = `
         SELECT
-            UNIX_SECONDS(time) as bin,
+                 UNIX_SECONDS(
+     TIMESTAMP_SECONDS(
+       DIV(
+         UNIX_SECONDS(TIMESTAMP(DATETIME(time, @tzOffset))), 
+         ${binSeconds}
+       ) * ${binSeconds}
+     )
+   ) AS bin,
             state,
             route as direction,
             mm
@@ -706,7 +714,7 @@ app.post('/generate_heatmap_vizzion', upload.none(), async (req, res) => {
         WHERE state = @state
           AND mm BETWEEN @min_mm AND @max_mm
           AND TRIM(route) = @direction
-          AND time >= TIMESTAMP('${start_date}', '${tzOffset}') AND time < TIMESTAMP('${end_date}', '${tzOffset}')
+          AND time >= TIMESTAMP(@start_date, @tzOffset) AND time < TIMESTAMP(@end_date, @tzOffset)
         ORDER BY time ASC
         `;
 
