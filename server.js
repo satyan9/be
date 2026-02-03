@@ -692,13 +692,9 @@ app.post('/generate_heatmap_events', upload.none(), async (req, res) => {
 
 app.post('/generate_heatmap_vizzion', upload.none(), async (req, res) => {
     try {
-        const { start_date, end_date, route, start_mm, end_mm, state, timezone } = req.body;
+        const { start_date, end_date, direction, start_mm, end_mm, state, timezone } = req.body;
         const stateParam = state || 'IN';
-        const tzOffset = TZ_OFFSETS[timezone || 'EST'] || '-05:00';
-
-        // Match both directions, e.g. 'I-70 E' and 'I-70 W'
-        const routeE = `${route} E`;
-        const routeW = `${route} W`;
+        const tzOffset = TZ_OFFSETS[timezone] || '-05:00';
 
         const query = `
         SELECT
@@ -709,9 +705,8 @@ app.post('/generate_heatmap_vizzion', upload.none(), async (req, res) => {
         FROM \`tmc-dashboards.vizzion.vizzion_drives\`
         WHERE state = @state
           AND mm BETWEEN @min_mm AND @max_mm
-          AND TRIM(route) IN (@routeE, @routeW)
-          AND time >= TIMESTAMP(@start_date, @tzOffset)
-          AND time < TIMESTAMP(@end_date, @tzOffset)
+          AND TRIM(route) = @direction
+          AND time >= TIMESTAMP('${start_date}', '${tzOffset}') AND time < TIMESTAMP('${end_date}', '${tzOffset}')
         ORDER BY time ASC
         `;
 
@@ -721,8 +716,7 @@ app.post('/generate_heatmap_vizzion', upload.none(), async (req, res) => {
                 state: stateParam,
                 min_mm: Math.min(parseFloat(start_mm), parseFloat(end_mm)),
                 max_mm: Math.max(parseFloat(start_mm), parseFloat(end_mm)),
-                routeE: routeE,
-                routeW: routeW,
+                direction: direction,
                 start_date: start_date,
                 end_date: moment(end_date).add(1, 'day').format('YYYY-MM-DD'),
                 tzOffset: tzOffset
