@@ -149,7 +149,7 @@ app.get('/get_exit_lines', async (req, res) => {
         const query = `
         SELECT interstate_dir, CAST(milepost AS FLOAT64) AS milepost, exit
         FROM \`tmc-dashboards.Heatmap.exit_lines\`
-        WHERE state = @state
+        WHERE state in ("IN","IL")
           AND (interstate_dir LIKE @route_pattern_1 OR interstate_dir LIKE @route_pattern_2)
           AND milepost >= @min_mile
           AND milepost <= @max_mile
