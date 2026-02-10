@@ -134,47 +134,52 @@ app.get('/get_camera_locations', async (req, res) => {
 
 // GET /get_exit_lines
 app.get('/get_exit_lines', async (req, res) => {
-    try {
-        const { state, route, start_mile, end_mile } = req.query;
+  try {
+    const { state, route, start_mile, end_mile } = req.query;
 
-        if (!route || start_mile === undefined || end_mile === undefined) {
-            return res.status(400).json({ error: "Required params: route, start_mile, end_mile" });
-        }
-        const sMile = parseFloat(start_mile);
-        const eMile = parseFloat(end_mile);
-        const stateParam = state || 'AL';
-
-        // We'll fetch for both directions if they exist, or the frontend can filter.
-        // The table has interstate_dir like 'I-10 E'
-        const query = `
-        SELECT interstate_dir, CAST(milepost AS FLOAT64) AS milepost, exit
-        FROM \`tmc-dashboards.Heatmap.exit_lines\`
-        WHERE state in ("IN","IL")
-          AND (interstate_dir LIKE @route_pattern_1 OR interstate_dir LIKE @route_pattern_2)
-          AND milepost >= @min_mile
-          AND milepost <= @max_mile
-        ORDER BY milepost ASC
-        `;
-
-        const options = {
-            query: query,
-            params: {
-                state: stateParam,
-                route_pattern_1: `${route} %`,
-                route_pattern_2: `${route.replace('-', '')} %`,
-                min_mile: Math.min(sMile, eMile),
-                max_mile: Math.max(sMile, eMile)
-            }
-        };
-
-        const [rows] = await bigquery.query(options);
-        res.json(rows);
-
-    } catch (e) {
-        console.error("Error in /get_exit_lines:", e);
-        res.status(500).json({ error: e.message });
+    if (!route || start_mile === undefined || end_mile === undefined) {
+      return res.status(400).json({ error: "Required params: route, start_mile, end_mile" });
     }
+
+    const sMile = parseFloat(start_mile);
+    const eMile = parseFloat(end_mile);
+
+    // ✅ Correct condition
+    let stateParam = state;
+    if (stateParam !== "IN" && stateParam !== "IL") {
+      stateParam = "AA";
+    }
+
+    const query = `
+      SELECT interstate_dir, CAST(milepost AS FLOAT64) AS milepost, exit
+      FROM \`tmc-dashboards.Heatmap.exit_lines\`
+      WHERE state = @state
+        AND (interstate_dir LIKE @route_pattern_1 OR interstate_dir LIKE @route_pattern_2)
+        AND milepost >= @min_mile
+        AND milepost <= @max_mile
+      ORDER BY milepost ASC
+    `;
+
+    const options = {
+      query,
+      params: {
+        state: stateParam,
+        route_pattern_1: `${route} %`,
+        route_pattern_2: `${route.replace('-', '')} %`,
+        min_mile: Math.min(sMile, eMile),
+        max_mile: Math.max(sMile, eMile)
+      }
+    };
+
+    const [rows] = await bigquery.query(options);
+    res.json(rows);
+
+  } catch (e) {
+    console.error("Error in /get_exit_lines:", e);
+    res.status(500).json({ error: e.message });
+  }
 });
+
 
 // CAR: POST /generate_heatmap_car
 app.post('/generate_heatmap_car', upload.none(), (req, res) => {
