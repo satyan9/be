@@ -134,23 +134,23 @@ app.get('/get_camera_locations', async (req, res) => {
 
 // GET /get_exit_lines
 app.get('/get_exit_lines', async (req, res) => {
-  try {
-    const { state, route, start_mile, end_mile } = req.query;
+    try {
+        const { state, route, start_mile, end_mile } = req.query;
 
-    if (!route || start_mile === undefined || end_mile === undefined) {
-      return res.status(400).json({ error: "Required params: route, start_mile, end_mile" });
-    }
+        if (!route || start_mile === undefined || end_mile === undefined) {
+            return res.status(400).json({ error: "Required params: route, start_mile, end_mile" });
+        }
 
-    const sMile = parseFloat(start_mile);
-    const eMile = parseFloat(end_mile);
+        const sMile = parseFloat(start_mile);
+        const eMile = parseFloat(end_mile);
 
-    // ✅ Correct condition
-    let stateParam = state;
-    if (stateParam !== "IN" && stateParam !== "IL") {
-      stateParam = "AA";
-    }
+        // ✅ Correct condition
+        let stateParam = state;
+        if (stateParam !== "IN" && stateParam !== "IL" && stateParam !== "DE" && stateParam !== "MA" && stateParam !== "MD" && stateParam !== "MI" && stateParam !== "PA" && stateParam !== "TX" && stateParam !== "UT" && stateParam !== "WI") {
+            stateParam = "AA";
+        }
 
-    const query = `
+        const query = `
       SELECT interstate_dir, CAST(milepost AS FLOAT64) AS milepost, exit
       FROM \`tmc-dashboards.Heatmap.exit_lines\`
       WHERE state = @state
@@ -160,24 +160,24 @@ app.get('/get_exit_lines', async (req, res) => {
       ORDER BY milepost ASC
     `;
 
-    const options = {
-      query,
-      params: {
-        state: stateParam,
-        route_pattern_1: `${route} %`,
-        route_pattern_2: `${route.replace('-', '')} %`,
-        min_mile: Math.min(sMile, eMile),
-        max_mile: Math.max(sMile, eMile)
-      }
-    };
+        const options = {
+            query,
+            params: {
+                state: stateParam,
+                route_pattern_1: `${route} %`,
+                route_pattern_2: `${route.replace('-', '')} %`,
+                min_mile: Math.min(sMile, eMile),
+                max_mile: Math.max(sMile, eMile)
+            }
+        };
 
-    const [rows] = await bigquery.query(options);
-    res.json(rows);
+        const [rows] = await bigquery.query(options);
+        res.json(rows);
 
-  } catch (e) {
-    console.error("Error in /get_exit_lines:", e);
-    res.status(500).json({ error: e.message });
-  }
+    } catch (e) {
+        console.error("Error in /get_exit_lines:", e);
+        res.status(500).json({ error: e.message });
+    }
 });
 
 
@@ -210,6 +210,17 @@ app.get('/api/heatmap/getMiles_truck/:state/:roadName/:startDate/:endDate/:start
 app.get('/api/heatmap/getMiles_truck/:state/:roadName/:startDate/:endDate/:startmm/:endmm', (req, res) => {
     const { state, roadName, startDate, endDate, startmm, endmm } = req.params;
     handleTruckRequest(state, roadName, startDate, endDate, parseFloat(startmm), parseFloat(endmm), res, 'EST');
+});
+
+// INRIX: POST /generate_heatmap_inrix
+app.post('/generate_heatmap_inrix', upload.none(), (req, res) => {
+    const { start_date, end_date, direction, start_mm, end_mm, state, timezone } = req.body;
+    handleInrixRequest(state || 'IN', direction, start_date, end_date, parseFloat(start_mm), parseFloat(end_mm), res, timezone);
+});
+
+app.get('/api/heatmap/getMiles_inrix/:state/:roadName/:startDate/:endDate/:startmm/:endmm/:timezone', (req, res) => {
+    const { state, roadName, startDate, endDate, startmm, endmm, timezone } = req.params;
+    handleInrixRequest(state, roadName, startDate, endDate, parseFloat(startmm), parseFloat(endmm), res, timezone);
 });
 
 // --- HANDLERS ---
@@ -470,6 +481,89 @@ async function handleTruckRequest(state, roadName, startDate, endDate, startmm, 
     }
 }
 
+async function handleInrixRequest(state, roadName, startDate, endDate, startmm, endmm, res, timezone = 'EST') {
+    console.log(`[Inrix] Aggregated Streaming Request: [${state}] ${roadName} ${startDate} to ${endDate} (${startmm} to ${endmm}) TZ: ${timezone}`);
+
+    const tzOffset = TZ_OFFSETS[timezone] || '-05:00';
+    const stateParam = state || 'IN';
+
+    if (stateParam !== "IN") {
+        res.status(400).json({ error: "Invalid state" });
+        return;
+    }
+
+    const query = `
+    SELECT
+       rrm.mm, 
+       UNIX_SECONDS(TIMESTAMP(DATETIME(agg.bin, '${tzOffset}'))) AS bin,
+       ROUND(agg.median) as mph
+    FROM
+      \`tmc-dashboards.smart_segment.speeds_agg5\` AS agg
+    JOIN
+      \`tmc-dashboards.smart_segment.refpoints_route_mm_geo\` AS rrm
+      ON agg.refpoints_id = rrm.refpoint_id
+    WHERE
+        agg.bin >= TIMESTAMP('${startDate}', '${tzOffset}') AND agg.bin < TIMESTAMP('${endDate}', '${tzOffset}')
+        AND rrm.route = '${roadName}' AND rrm.mm BETWEEN ${Math.min(startmm, endmm)} AND ${Math.max(startmm, endmm)}
+    ORDER BY bin, mm ASC
+    `;
+
+
+    try {
+        res.setHeader('Content-Type', 'application/x-ndjson');
+        res.setHeader('Transfer-Encoding', 'chunked');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setTimeout(TIMEOUT_MS);
+
+        const stream = bigquery.createQueryStream({ query });
+
+        let jobRef = null;
+        stream.on('job', (job) => {
+            jobRef = job;
+        });
+
+        stream.on('data', (row) => {
+            const outRow = {
+                mm: row.mm,
+                bin: row.bin,
+                mph: row.mph,
+                event_type: 'inrix',
+                mmStep: 0.1, // Inrix often has 0.1 or similar, adjust if needed
+                binStep: 300 // aggregations are usually 5 mins (300s) based on table name agg5
+            };
+            res.write(JSON.stringify(outRow) + '\n');
+        });
+
+        stream.on('end', async () => {
+            console.log('[Inrix] Stream completed successfully');
+            if (jobRef) {
+                try {
+                    const [metadata] = await jobRef.getMetadata();
+                    const stats = metadata.statistics;
+                    const bytesVal = parseInt(stats.totalBytesBilled || stats.totalBytesProcessed || '0');
+                    const costVal = (bytesVal / 1099511627776) * 6.25;
+                    res.write(JSON.stringify({ meta: true, bytes: bytesVal, cost: costVal }) + '\n');
+                } catch (e) {
+                    console.error("Error fetching job stats", e);
+                }
+            }
+            setImmediate(() => { res.end(); });
+        });
+
+        stream.on('error', (err) => {
+            console.error("Inrix Query Stream Error:", err);
+            if (!res.headersSent) res.status(500).json({ error: err.message });
+            else res.end();
+        });
+
+    } catch (e) {
+        console.error("handleInrixRequest Error:", e);
+        if (!res.headersSent) res.status(500).json({ error: e.message });
+        else res.end();
+    }
+}
 async function getPolyIds(state, roadName, startmm, endmm) {
     const s = Math.min(startmm, endmm);
     const e = Math.max(startmm, endmm);
