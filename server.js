@@ -14,6 +14,9 @@ const upload = multer();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Trust Cloud Run's proxy (for correct protocol/host in URLs)
+app.set('trust proxy', true);
+
 // Increase timeout for long-running BigQuery streams (10 minutes)
 const TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -884,29 +887,46 @@ app.get('/get-images', async (req, res) => {
         return res.status(400).json({ error: "mile must be like 7.5" });
     }
 
-    const baseTime = moment(timestamp, "YYYYMMDDTHHmmss");
-    let foundData = null;
-
-    for (let diff = 0; diff <= 120; diff++) {
-        const t1 = moment(baseTime).subtract(diff, 'seconds');
-        const r1 = await checkAllCameras(t1, road, mileFormatted);
-        if (r1.found) {
-            foundData = r1.data;
-            break;
-        }
-
-        if (diff > 0) {
-            const t2 = moment(baseTime).add(diff, 'seconds');
-            const r2 = await checkAllCameras(t2, road, mileFormatted);
-            if (r2.found) {
-                foundData = r2.data;
-                break;
-            }
-        }
+    console.log(`[get-images] Request: road=${proad}, mile=${mile}, timestamp=${timestamp}, state=${state || 'IN'}`);
+    const baseTime = moment.utc(timestamp, "YYYYMMDDTHHmmss");
+    if (!baseTime.isValid()) {
+        console.error(`[get-images] Invalid timestamp format: ${timestamp}`);
+        return res.status(400).json({ error: "Invalid timestamp format" });
     }
 
-    if (!foundData) {
-        foundData = { cam1: "", cam2: "", cam3: "" };
+    const foundData = { cam1: "", cam2: "", cam3: "" };
+    const host = req.get('host');
+    const protocol = req.protocol;
+    const baseUrl = `${protocol}://${host}`;
+
+    // Search for each camera independently to fill all slots if they have slightly different timestamps
+    await Promise.all([1, 2, 3].map(async (camNo) => {
+        for (let diff = 0; diff <= 120; diff++) {
+            const t1 = moment.utc(baseTime).subtract(diff, 'seconds');
+            const ts1 = t1.format("YYYYMMDDTHHmmss");
+            const img1 = await findImage(ts1, road, mileFormatted, camNo, baseUrl);
+            if (img1) {
+                foundData[`cam${camNo}`] = img1;
+                return; // Found this camera, move to next
+            }
+
+            if (diff > 0) {
+                const t2 = moment.utc(baseTime).add(diff, 'seconds');
+                const ts2 = t2.format("YYYYMMDDTHHmmss");
+                const img2 = await findImage(ts2, road, mileFormatted, camNo, baseUrl);
+                if (img2) {
+                    foundData[`cam${camNo}`] = img2;
+                    return; // Found this camera, move to next
+                }
+            }
+        }
+    }));
+
+    const foundCount = Object.values(foundData).filter(v => v !== "").length;
+    if (foundCount === 0) {
+        console.log(`[get-images] No images found for ${proad} at MM ${mile} near ${timestamp}`);
+    } else {
+        console.log(`[get-images] Found ${foundCount} images for ${proad} at MM ${mile}`);
     }
 
     res.json({
@@ -917,21 +937,37 @@ app.get('/get-images', async (req, res) => {
     });
 });
 
-async function checkAllCameras(timeObj, road, mileFormatted) {
-    const ts = timeObj.format("YYYYMMDDTHHmmss");
-    const [cam1, cam2, cam3] = await Promise.all([
-        findImage(ts, road, mileFormatted, 1),
-        findImage(ts, road, mileFormatted, 2),
-        findImage(ts, road, mileFormatted, 3)
-    ]);
+// Proxy endpoint to serve images from GCS without needing signed URLs locally
+app.get('/api/image-proxy', async (req, res) => {
+    const { path: blobPath } = req.query;
+    if (!blobPath) return res.status(400).send("Path required");
 
-    return {
-        found: (cam1 !== "" || cam2 !== "" || cam3 !== ""),
-        data: { cam1, cam2, cam3 }
-    };
-}
+    try {
+        const file = storage.bucket(BUCKET_NAME).file(blobPath);
+        const [exists] = await file.exists();
+        if (!exists) {
+            console.warn(`[proxy] File not found: ${blobPath}`);
+            return res.status(404).send("Not found");
+        }
 
-async function findImage(timestamp, road, mileFormatted, camNo) {
+        res.setHeader('Content-Type', 'image/jpeg');
+        res.setHeader('Cache-Control', 'public, max-age=3600'); // 1 hour cache
+
+        file.createReadStream()
+            .on('error', (err) => {
+                console.error(`[proxy] Stream error for ${blobPath}:`, err);
+                if (!res.headersSent) res.status(500).send(err.message);
+            })
+            .pipe(res);
+    } catch (e) {
+        console.error(`[proxy] Error for ${blobPath}:`, e);
+        res.status(500).send(e.message);
+    }
+});
+
+
+
+async function findImage(timestamp, road, mileFormatted, camNo, baseUrl) {
     const filename = `${timestamp}_1-${road}-${mileFormatted}-_-_-cam-${camNo}.jpg`;
     const blobPath = PREFIX + filename;
     const bucket = storage.bucket(BUCKET_NAME);
@@ -940,23 +976,25 @@ async function findImage(timestamp, road, mileFormatted, camNo) {
     try {
         const [exists] = await file.exists();
         if (exists) {
-            return await generateSignedUrl(file);
+            // console.log(`Found image: ${filename}`);
+            return await generateSignedUrl(file, baseUrl);
         }
     } catch (e) {
-        console.error("GCS Error Ignored:", e.message);
+        if (e.message.includes("credentials") || e.message.includes("key")) {
+            console.error(`GCS Auth Error for ${filename}:`, e.message);
+        } else {
+            // console.error(`GCS Error for ${filename}:`, e.message);
+        }
     }
     return "";
 }
 
 
-async function generateSignedUrl(file) {
-    const options = {
-        version: 'v4',
-        action: 'read',
-        expires: Date.now() + 3600 * 1000 // 1 hour
-    };
-    const [url] = await file.getSignedUrl(options);
-    return url;
+async function generateSignedUrl(file, baseUrl) {
+    // For local development, we use a proxy endpoint because 'getSignedUrl' 
+    // requires a Service Account Key's private key, which is often missing in local ADC.
+    // This proxy uses the server's existing credentials to stream the file.
+    return `${baseUrl}/api/image-proxy?path=${encodeURIComponent(file.name)}`;
 }
 
 const server = app.listen(PORT, () => {
