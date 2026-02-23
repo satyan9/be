@@ -609,7 +609,7 @@ async function handlePolyRequest(state, roadName, startDate, endDate, startmm, e
       ON agg.smartpoly_id = sp.id
     WHERE
         sp.state = '${stateParam}'
-        AND sp.route IN ('I-469 N', 'I-469 S')
+        AND sp.route = '${roadName}'
         AND agg.bin_5min >= TIMESTAMP('${startDate}', '${tzOffset}') 
         AND agg.bin_5min < TIMESTAMP('${endDate}', '${tzOffset}')
         AND sp.mm BETWEEN ${Math.min(startmm, endmm)} AND ${Math.max(startmm, endmm)}
