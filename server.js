@@ -226,6 +226,17 @@ app.get('/api/heatmap/getMiles_inrix/:state/:roadName/:startDate/:endDate/:start
     handleInrixRequest(state, roadName, startDate, endDate, parseFloat(startmm), parseFloat(endmm), res, timezone);
 });
 
+// POLY: POST /generate_heatmap_poly
+app.post('/generate_heatmap_poly', upload.none(), (req, res) => {
+    const { start_date, end_date, direction, start_mm, end_mm, state, timezone } = req.body;
+    handlePolyRequest(state || 'IN', direction, start_date, end_date, parseFloat(start_mm), parseFloat(end_mm), res, timezone);
+});
+
+app.get('/api/heatmap/getMiles_poly/:state/:roadName/:startDate/:endDate/:startmm/:endmm/:timezone', (req, res) => {
+    const { state, roadName, startDate, endDate, startmm, endmm, timezone } = req.params;
+    handlePolyRequest(state, roadName, startDate, endDate, parseFloat(startmm), parseFloat(endmm), res, timezone);
+});
+
 // --- HANDLERS ---
 
 const formatTimestamp = (ts) => {
@@ -567,6 +578,100 @@ async function handleInrixRequest(state, roadName, startDate, endDate, startmm, 
         else res.end();
     }
 }
+async function handlePolyRequest(state, roadName, startDate, endDate, startmm, endmm, res, timezone = 'EST') {
+    console.log(`[Poly] Aggregated Streaming Request: [${state}] ${roadName} ${startDate} to ${endDate} (${startmm} to ${endmm}) TZ: ${timezone}`);
+
+    const tzOffset = TZ_OFFSETS[timezone] || '-05:00';
+    const stateParam = state || 'IN';
+
+    // Condition: only show data when state is IN and route is I469
+    if (stateParam !== "IN" || !roadName.includes("I-469")) {
+        // Return empty stream or empty response
+        res.setHeader('Content-Type', 'application/x-ndjson');
+        res.end();
+        return;
+    }
+
+    // Determine the table name based on the date. 
+    // The user provided sp_speeds_agg5_202601. 
+    // For now, let's use the provided table name as requested.
+    const tableName = "tmc-dashboards.poly_xd.sp_speeds_agg5_202601";
+
+    const query = `
+    SELECT
+       sp.mm, 
+       UNIX_SECONDS(TIMESTAMP(DATETIME(agg.bin_5min, '${tzOffset}'))) AS bin,
+       ROUND(agg.median_speed) as mph
+    FROM
+      \`${tableName}\` AS agg
+    JOIN
+      \`tmc-dashboards.shapefiles.smart_polys\` AS sp
+      ON agg.smartpoly_id = sp.id
+    WHERE
+        sp.state = '${stateParam}'
+        AND sp.route IN ('I-469 N', 'I-469 S')
+        AND agg.bin_5min >= TIMESTAMP('${startDate}', '${tzOffset}') 
+        AND agg.bin_5min < TIMESTAMP('${endDate}', '${tzOffset}')
+        AND sp.mm BETWEEN ${Math.min(startmm, endmm)} AND ${Math.max(startmm, endmm)}
+    ORDER BY bin, mm ASC
+    `;
+
+    try {
+        res.setHeader('Content-Type', 'application/x-ndjson');
+        res.setHeader('Transfer-Encoding', 'chunked');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setTimeout(TIMEOUT_MS);
+
+        const stream = bigquery.createQueryStream({ query });
+
+        let jobRef = null;
+        stream.on('job', (job) => {
+            jobRef = job;
+        });
+
+        stream.on('data', (row) => {
+            const outRow = {
+                mm: row.mm,
+                bin: row.bin,
+                mph: row.mph,
+                event_type: 'poly',
+                mmStep: 0.1,
+                binStep: 300
+            };
+            res.write(JSON.stringify(outRow) + '\n');
+        });
+
+        stream.on('end', async () => {
+            console.log('[Poly] Stream completed successfully');
+            if (jobRef) {
+                try {
+                    const [metadata] = await jobRef.getMetadata();
+                    const stats = metadata.statistics;
+                    const bytesVal = parseInt(stats.totalBytesBilled || stats.totalBytesProcessed || '0');
+                    const costVal = (bytesVal / 1099511627776) * 6.25;
+                    res.write(JSON.stringify({ meta: true, bytes: bytesVal, cost: costVal }) + '\n');
+                } catch (e) {
+                    console.error("Error fetching job stats", e);
+                }
+            }
+            setImmediate(() => { res.end(); });
+        });
+
+        stream.on('error', (err) => {
+            console.error("Poly Query Stream Error:", err);
+            if (!res.headersSent) res.status(500).json({ error: err.message });
+            else res.end();
+        });
+
+    } catch (e) {
+        console.error("handlePolyRequest Error:", e);
+        if (!res.headersSent) res.status(500).json({ error: e.message });
+        else res.end();
+    }
+}
+
 async function getPolyIds(state, roadName, startmm, endmm) {
     const s = Math.min(startmm, endmm);
     const e = Math.max(startmm, endmm);
@@ -990,11 +1095,20 @@ async function findImage(timestamp, road, mileFormatted, camNo, baseUrl) {
 }
 
 
-async function generateSignedUrl(file, baseUrl) {
-    // For local development, we use a proxy endpoint because 'getSignedUrl' 
-    // requires a Service Account Key's private key, which is often missing in local ADC.
-    // This proxy uses the server's existing credentials to stream the file.
-    return `${baseUrl}/api/image-proxy?path=${encodeURIComponent(file.name)}`;
+// async function generateSignedUrl(file, baseUrl) {
+//     // For local development, we use a proxy endpoint because 'getSignedUrl' 
+//     // requires a Service Account Key's private key, which is often missing in local ADC.
+//     // This proxy uses the server's existing credentials to stream the file.
+//     return `${baseUrl}/api/image-proxy?path=${encodeURIComponent(file.name)}`;
+// }
+async function generateSignedUrl(file) {
+    const options = {
+        version: 'v4',
+        action: 'read',
+        expires: Date.now() + 3600 * 1000 // 1 hour
+    };
+    const [url] = await file.getSignedUrl(options);
+    return url;
 }
 
 const server = app.listen(PORT, () => {
