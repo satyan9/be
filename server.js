@@ -592,27 +592,20 @@ async function handlePolyRequest(state, roadName, startDate, endDate, startmm, e
         return;
     }
 
-    // Determine the table name based on the date. 
-    // The user provided sp_speeds_agg5_202601. 
-    // For now, let's use the provided table name as requested.
-    const tableName = "tmc-dashboards.poly_xd.sp_speeds_agg5_202601";
 
     const query = `
     SELECT
-       sp.mm, 
-       UNIX_SECONDS(TIMESTAMP(DATETIME(agg.bin_5min, '${tzOffset}'))) AS bin,
-       ROUND(agg.median_speed) as mph
+       rrm.mm, 
+       UNIX_SECONDS(TIMESTAMP(DATETIME(agg.bin, '${tzOffset}'))) AS bin,
+       ROUND(agg.median) as mph
     FROM
-      \`${tableName}\` AS agg
+      \`tmc-dashboards.smart_segment.speeds_agg5\` AS agg
     JOIN
-      \`tmc-dashboards.shapefiles.smart_polys\` AS sp
-      ON agg.smartpoly_id = sp.id
+      \`tmc-dashboards.smart_segment.refpoints_route_mm_geo\` AS rrm
+      ON agg.refpoints_id = rrm.refpoint_id
     WHERE
-        sp.state = '${stateParam}'
-        AND sp.route = '${roadName}'
-        AND agg.bin_5min >= TIMESTAMP('${startDate}', '${tzOffset}') 
-        AND agg.bin_5min < TIMESTAMP('${endDate}', '${tzOffset}')
-        AND sp.mm BETWEEN ${Math.min(startmm, endmm)} AND ${Math.max(startmm, endmm)}
+        agg.bin >= TIMESTAMP('${startDate}', '${tzOffset}') AND agg.bin < TIMESTAMP('${endDate}', '${tzOffset}')
+        AND rrm.route = '${roadName}' AND rrm.mm BETWEEN ${Math.min(startmm, endmm)} AND ${Math.max(startmm, endmm)}
     ORDER BY bin, mm ASC
     `;
 
