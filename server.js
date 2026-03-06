@@ -585,7 +585,7 @@ async function handlePolyRequest(state, roadName, startDate, endDate, startmm, e
     const stateParam = state || 'IN';
 
     // Condition: only show data when state is IN and route is I469
-    if (stateParam !== "IN" || !roadName.includes("I-469")) {
+    if (stateParam !== "IN") {
         // Return empty stream or empty response
         res.setHeader('Content-Type', 'application/x-ndjson');
         res.end();
@@ -899,23 +899,25 @@ app.post('/generate_heatmap_vizzion', upload.none(), async (req, res) => {
 
         const query = `
         SELECT
-                 UNIX_SECONDS(
-     TIMESTAMP_SECONDS(
-       DIV(
-         UNIX_SECONDS(TIMESTAMP(DATETIME(time, @tzOffset))), 
-         ${binSeconds}
-       ) * ${binSeconds}
-     )
-   ) AS bin,
-            state,
-            route as direction,
-            mm
-        FROM \`tmc-dashboards.vizzion.vizzion_drives\`
-        WHERE state = @state
-          AND mm BETWEEN @min_mm AND @max_mm
-          AND TRIM(route) = @direction
-          AND time >= TIMESTAMP(@start_date, @tzOffset) AND time < TIMESTAMP(@end_date, @tzOffset)
-        ORDER BY time ASC
+            UNIX_SECONDS(
+                TIMESTAMP_SECONDS(
+                    DIV(
+                        UNIX_SECONDS(TIMESTAMP(DATETIME(d.time, @tzOffset))),
+                        ${binSeconds}
+                    ) * ${binSeconds}
+                )
+            ) AS bin,
+            d.state,
+            d.route as direction,
+            d.mm,
+            q.image_status AS val
+        FROM \`tmc-dashboards.vizzion.vizzion_drives\` d
+        LEFT JOIN \`tmc-dashboards.vizzion.vizzion_drives_queue\` q ON d.vehicleid = q.vehicleid AND d.time = q.time
+        WHERE d.state = @state
+          AND d.mm BETWEEN @min_mm AND @max_mm
+          AND TRIM(d.route) = @direction
+          AND d.time >= TIMESTAMP(@start_date, @tzOffset) AND d.time < TIMESTAMP(@end_date, @tzOffset)
+        ORDER BY d.time ASC
         `;
 
         const options = {
