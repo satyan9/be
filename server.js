@@ -237,6 +237,12 @@ app.get('/api/heatmap/getMiles_poly/:state/:roadName/:startDate/:endDate/:startm
     handlePolyRequest(state, roadName, startDate, endDate, parseFloat(startmm), parseFloat(endmm), res, timezone);
 });
 
+// CRASH: POST /generate_heatmap_crash
+app.post('/generate_heatmap_crash', upload.none(), (req, res) => {
+    const { start_date, end_date, direction, route, start_mm, end_mm, state, timezone } = req.body;
+    handleCrashRequest(state || 'IN', route, direction, start_date, end_date, parseFloat(start_mm), parseFloat(end_mm), res, timezone);
+});
+
 // --- HANDLERS ---
 
 const formatTimestamp = (ts) => {
@@ -660,6 +666,87 @@ async function handlePolyRequest(state, roadName, startDate, endDate, startmm, e
 
     } catch (e) {
         console.error("handlePolyRequest Error:", e);
+        if (!res.headersSent) res.status(500).json({ error: e.message });
+        else res.end();
+    }
+}
+
+async function handleCrashRequest(state, roadName, directionString, startDate, endDate, startmm, endmm, res, timezone = 'EST') {
+    console.log(`[Crash] Streaming Request: [${state}] ${roadName} ${directionString} ${startDate} to ${endDate} (${startmm} to ${endmm}) TZ: ${timezone}`);
+
+    const tzOffset = TZ_OFFSETS[timezone] || '-05:00';
+    // extract dir like IL, OL, N, S from something like "I-465 IL"
+    const dir = directionString.split(' ').pop();
+
+    const query = `
+      SELECT
+        MM as mm,
+        UNIX_SECONDS(TIMESTAMP(DATETIME(crash_datetime_utc, '${tzOffset}'))) as bin,
+        CASE
+          WHEN PI = 0 AND F = 0 THEN 'PDO'
+          WHEN PI > 0 AND F = 0 THEN 'PI'
+          WHEN F > 0 THEN 'FATAL'
+        END AS val
+      FROM \`tmc-dashboards.crash.crash\`
+      WHERE Route LIKE '${roadName.replace('-', '')}%'
+        AND Direction = '${dir}'
+        AND crash_datetime_utc >= TIMESTAMP(DATETIME('${startDate} 00:00:00'), '${tzOffset}')
+        AND crash_datetime_utc < TIMESTAMP(DATETIME(DATE_ADD(DATE('${endDate}'), INTERVAL 1 DAY), '00:00:00'), '${tzOffset}')
+        AND MM BETWEEN ${Math.min(startmm, endmm)} AND ${Math.max(startmm, endmm)}
+    `;
+
+    try {
+        res.setHeader('Content-Type', 'application/x-ndjson');
+        res.setHeader('Transfer-Encoding', 'chunked');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setTimeout(TIMEOUT_MS);
+
+        const stream = bigquery.createQueryStream({ query });
+        console.log(stream);
+
+        let jobRef = null;
+        stream.on('job', (job) => {
+            jobRef = job;
+        });
+
+        stream.on('data', (row) => {
+            const outRow = {
+                mm: row.mm,
+                bin: row.bin,
+                val: row.val,
+                event_type: 'crash',
+                mmStep: 0.1,
+                binStep: 60
+            };
+            res.write(JSON.stringify(outRow) + '\n');
+        });
+
+        stream.on('end', async () => {
+            console.log('[Crash] Stream completed successfully');
+            if (jobRef) {
+                try {
+                    const [metadata] = await jobRef.getMetadata();
+                    const stats = metadata.statistics;
+                    const bytesVal = parseInt(stats.totalBytesBilled || stats.totalBytesProcessed || '0');
+                    const costVal = (bytesVal / 1099511627776) * 6.25;
+                    res.write(JSON.stringify({ meta: true, bytes: bytesVal, cost: costVal }) + '\n');
+                } catch (e) {
+                    console.error("Error fetching job stats", e);
+                }
+            }
+            setImmediate(() => { res.end(); });
+        });
+
+        stream.on('error', (err) => {
+            console.error("Crash Query Stream Error:", err);
+            if (!res.headersSent) res.status(500).json({ error: err.message });
+            else res.end();
+        });
+
+    } catch (e) {
+        console.error("handleCrashRequest Error:", e);
         if (!res.headersSent) res.status(500).json({ error: e.message });
         else res.end();
     }
