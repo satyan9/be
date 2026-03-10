@@ -682,6 +682,7 @@ async function handleCrashRequest(state, roadName, directionString, startDate, e
       SELECT
         MM as mm,
         UNIX_SECONDS(TIMESTAMP(DATETIME(crash_datetime_utc, '${tzOffset}'))) as bin,
+        MRN as mrn,
         CASE
           WHEN PI = 0 AND F = 0 THEN 'PDO'
           WHEN PI > 0 AND F = 0 THEN 'PI'
@@ -704,7 +705,7 @@ async function handleCrashRequest(state, roadName, directionString, startDate, e
         res.setTimeout(TIMEOUT_MS);
 
         const stream = bigquery.createQueryStream({ query });
-        console.log(stream);
+        // console.log(stream);
 
         let jobRef = null;
         stream.on('job', (job) => {
@@ -716,6 +717,7 @@ async function handleCrashRequest(state, roadName, directionString, startDate, e
                 mm: row.mm,
                 bin: row.bin,
                 val: row.val,
+                mrn: row.mrn,
                 event_type: 'crash',
                 mmStep: 0.1,
                 binStep: 60
