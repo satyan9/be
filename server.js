@@ -599,21 +599,40 @@ async function handlePolyRequest(state, roadName, startDate, endDate, startmm, e
     }
 
 
-    const query = `
-    SELECT
-       rrm.mm, 
-       UNIX_SECONDS(TIMESTAMP(DATETIME(agg.bin, '${tzOffset}'))) AS bin,
-       ROUND(agg.median) as mph
-    FROM
-      \`tmc-dashboards.smart_segment.speeds_agg5\` AS agg
-    JOIN
-      \`tmc-dashboards.smart_segment.refpoints_route_mm_geo\` AS rrm
-      ON agg.refpoints_id = rrm.refpoint_id
-    WHERE
-        agg.bin >= TIMESTAMP('${startDate}', '${tzOffset}') AND agg.bin < TIMESTAMP('${endDate}', '${tzOffset}')
-        AND rrm.route = '${roadName}' AND rrm.mm BETWEEN ${Math.min(startmm, endmm)} AND ${Math.max(startmm, endmm)}
-    ORDER BY bin, mm ASC
-    `;
+    let query;
+    if (startDate && startDate.startsWith('2026-01')) {
+        query = `
+        SELECT
+           rrm.mm, 
+           UNIX_SECONDS(TIMESTAMP(DATETIME(agg.bin, '${tzOffset}'))) AS bin,
+           ROUND(agg.median) as mph
+        FROM
+          \`tmc-dashboards.smart_segment.speeds_agg5\` AS agg
+        JOIN
+          \`tmc-dashboards.smart_segment.refpoints_route_mm_geo\` AS rrm
+          ON agg.refpoints_id = rrm.refpoint_id
+        WHERE
+            agg.bin >= TIMESTAMP('${startDate}', '${tzOffset}') AND agg.bin < TIMESTAMP('${endDate}', '${tzOffset}')
+            AND rrm.route = '${roadName}' AND rrm.mm BETWEEN ${Math.min(startmm, endmm)} AND ${Math.max(startmm, endmm)}
+        ORDER BY bin, mm ASC
+        `;
+    } else {
+        query = `
+        SELECT
+           sp.mm, 
+           UNIX_SECONDS(TIMESTAMP(DATETIME(agg.bin_5min, '${tzOffset}'))) AS bin,
+           ROUND(agg.median_speed) as mph
+        FROM
+          \`tmc-dashboards.smart_segment.sp_speeds_agg5\` AS agg
+        JOIN
+          \`tmc-dashboards.shapefiles.smart_polys\` AS sp
+          ON agg.smartpoly_id = sp.id
+        WHERE
+            agg.bin_5min >= TIMESTAMP('${startDate}', '${tzOffset}') AND agg.bin_5min < TIMESTAMP('${endDate}', '${tzOffset}')
+            AND sp.state = '${stateParam}' AND sp.route = '${roadName}' AND sp.mm BETWEEN ${Math.min(startmm, endmm)} AND ${Math.max(startmm, endmm)}
+        ORDER BY bin, mm ASC
+        `;
+    }
 
     try {
         res.setHeader('Content-Type', 'application/x-ndjson');
