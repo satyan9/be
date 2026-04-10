@@ -12,7 +12,7 @@ const multer = require('multer');
 const upload = multer();
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 8000;
 
 // Trust Cloud Run's proxy (for correct protocol/host in URLs)
 app.set('trust proxy', true);
@@ -1213,6 +1213,87 @@ async function generateSignedUrl(file) {
     const [url] = await file.getSignedUrl(options);
     return url;
 }
+
+//haasss
+
+// GET /api/heatmap/getHaas
+app.get('/api/heatmap/getHaas/:state/:roadName/:startDate/:endDate/:startmm/:endmm/:timezone', async (req, res) => {
+    try {
+        const { state, roadName, startDate, endDate, startmm, endmm, timezone } = req.params;
+        const tzOffset = TZ_OFFSETS[timezone] || '-05:00';
+        const stateParam = state || 'IN';
+        const query = `
+WITH matched AS (
+  SELECT p.timestamp, p.is_active, p.speed, poly.mm, poly.route AS roadName,
+    t.device_name, t.thingname, t.type,
+    ROW_NUMBER() OVER (PARTITION BY p.timestamp, t.device_name ORDER BY poly.mm ASC) AS rn
+  FROM \`tmc-dashboards.haas.point\` p
+  INNER JOIN \`tmc-dashboards.shapefiles.smart_polys\` poly ON ST_Contains(poly.geog, ST_GEOGPOINT(p.long, p.lat))
+  INNER JOIN \`tmc-dashboards.haas.thing\` t ON t.external_id = p.external_id
+  WHERE p.timestamp >= TIMESTAMP('${startDate} 00:00:00', '${tzOffset}')
+    AND p.timestamp < TIMESTAMP('${endDate} 00:00:00', '${tzOffset}')
+    AND poly.route = '${roadName}' AND poly.mm >= ${parseFloat(startmm)}
+    AND poly.mm <= ${parseFloat(endmm)} AND poly.state = '${stateParam}'
+    AND t.external_id != 'external_id'
+)
+SELECT UNIX_SECONDS(TIMESTAMP(DATETIME(timestamp, '${tzOffset}'))) AS bin,
+    is_active, speed, mm, roadName, device_name, thingname, type
+FROM matched WHERE rn = 1 ORDER BY timestamp ASC`;
+        res.setHeader('Content-Type', 'application/x-ndjson');
+        res.setHeader('Transfer-Encoding', 'chunked');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setTimeout(TIMEOUT_MS);
+        const stream = bigquery.createQueryStream({ query });
+        let buffer = [];
+        stream.on('data', (row) => {
+            buffer.push({ bin: row.bin, mm: parseFloat(row.mm), is_active: row.is_active, speed: row.speed, device_name: row.device_name, thingname: row.thingname, type: row.type, roadName: row.roadName, event_type: 'haas' });
+            if (buffer.length >= 500) { buffer.forEach(r => res.write(JSON.stringify(r) + '\n')); buffer = []; }
+        });
+        stream.on('end', () => { buffer.forEach(r => res.write(JSON.stringify(r) + '\n')); res.end(); });
+        stream.on('error', (e) => { console.error('HAAS stream error:', e); if (!res.headersSent) res.status(500).json({ error: e.message }); else res.end(); });
+    } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/heatmap/getHaasLocation
+app.get('/api/heatmap/getHaasLocation/:state/:roadName/:startDate/:endDate/:startmm/:endmm/:timezone', async (req, res) => {
+    try {
+        const { state, roadName, startDate, endDate, startmm, endmm, timezone } = req.params;
+        const tzOffset = TZ_OFFSETS[timezone] || '-05:00';
+        const stateParam = state || 'IN';
+        const query = `
+WITH matched AS (
+  SELECT l.start_time, l.end_time, l.is_active, l.type, l.street_name,
+    poly.mm, poly.route AS roadName, t.device_name, t.thingname,
+    ROW_NUMBER() OVER (PARTITION BY l.external_id ORDER BY poly.mm ASC) AS rn
+  FROM \`tmc-dashboards.haas.location\` l
+  INNER JOIN \`tmc-dashboards.shapefiles.smart_polys\` poly ON ST_Contains(poly.geog, ST_GEOGPOINT(l.long, l.lat))
+  INNER JOIN \`tmc-dashboards.haas.thing\` t ON t.external_id = SPLIT(l.external_id, '-')[OFFSET(0)]
+  WHERE l.start_time >= TIMESTAMP('${startDate} 00:00:00', '${tzOffset}')
+    AND l.start_time < TIMESTAMP('${endDate} 23:59:59', '${tzOffset}')
+    AND poly.route = '${roadName}' AND poly.mm >= ${parseFloat(startmm)}
+    AND poly.mm <= ${parseFloat(endmm)} AND poly.state = '${stateParam}'
+    AND t.external_id != 'external_id'
+)
+SELECT UNIX_SECONDS(TIMESTAMP(DATETIME(start_time, '${tzOffset}'))) AS start_bin,
+    UNIX_SECONDS(TIMESTAMP(DATETIME(end_time, '${tzOffset}'))) AS end_bin,
+    is_active, type, street_name, mm, roadName, device_name, thingname
+FROM matched WHERE rn = 1 ORDER BY start_time ASC`;
+        res.setHeader('Content-Type', 'application/x-ndjson');
+        res.setHeader('Transfer-Encoding', 'chunked');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setTimeout(TIMEOUT_MS);
+        const stream = bigquery.createQueryStream({ query });
+        let buffer = [];
+        stream.on('data', (row) => {
+            buffer.push({ start_bin: row.start_bin, end_bin: row.end_bin, mm: parseFloat(row.mm), is_active: row.is_active, type: row.type, street_name: row.street_name, device_name: row.device_name, thingname: row.thingname, roadName: row.roadName, event_type: 'haas_location' });
+            if (buffer.length >= 500) { buffer.forEach(r => res.write(JSON.stringify(r) + '\n')); buffer = []; }
+        });
+        stream.on('end', () => { buffer.forEach(r => res.write(JSON.stringify(r) + '\n')); res.end(); });
+        stream.on('error', (e) => { console.error('HAAS Location stream error:', e); if (!res.headersSent) res.status(500).json({ error: e.message }); else res.end(); });
+    } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+});
 
 const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
