@@ -1072,9 +1072,23 @@ app.post('/generate_heatmap_vizzion', upload.none(), async (req, res) => {
 
 app.get('/api/get_vizzion_images', async (req, res) => {
     try {
-        const { vehicleid, time } = req.query;
+        const { vehicleid, time, mm, state, route } = req.query;
         if (!vehicleid || !time) {
             return res.status(400).json({ error: "vehicleid and time required" });
+        }
+
+        // Determine possible directions based on the base route
+        // This is a simple heuristic. For more accuracy, we could pass directions from frontend.
+        let routeFilter = "";
+        const cleanRoute = (route || "").trim();
+        if (cleanRoute) {
+            // Check if it's already a full route name (e.g. "I-74 E")
+            if (cleanRoute.includes(" ")) {
+                routeFilter = `AND TRIM(d.route) = @route`;
+            } else {
+                // It's a base route, try to match all directions
+                routeFilter = `AND (TRIM(d.route) LIKE @route_pattern_e OR TRIM(d.route) LIKE @route_pattern_w OR TRIM(d.route) LIKE @route_pattern_il OR TRIM(d.route) LIKE @route_pattern_ol OR TRIM(d.route) LIKE @route_pattern_n OR TRIM(d.route) LIKE @route_pattern_s)`;
+            }
         }
 
         const query = `
@@ -1088,15 +1102,27 @@ app.get('/api/get_vizzion_images', async (req, res) => {
           AND img.time >= d.time AND img.time < TIMESTAMP_ADD(d.time, INTERVAL d.seconds SECOND)
           AND d.route = img.route
         WHERE d.vehicleid = @vehicleid
-          AND d.time = TIMESTAMP(@time)
-        ORDER BY img.time ASC
+          AND d.state = @state
+          AND d.mm = @mm
+          AND q.image_status = 2
+          ${routeFilter}
+          AND DATE(d.time) = DATE(@time)
         `;
         
         const options = {
             query: query,
             params: {
                 vehicleid: parseInt(vehicleid, 10),
-                time: time
+                time: time,
+                state: state || 'IN',
+                mm: parseFloat(mm),
+                route: cleanRoute,
+                route_pattern_e: `${cleanRoute} E`,
+                route_pattern_w: `${cleanRoute} W`,
+                route_pattern_il: `${cleanRoute} IL`,
+                route_pattern_ol: `${cleanRoute} OL`,
+                route_pattern_n: `${cleanRoute} N`,
+                route_pattern_s: `${cleanRoute} S`
             }
         };
 
