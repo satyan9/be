@@ -12,7 +12,7 @@ const multer = require('multer');
 const upload = multer();
 
 const app = express();
-const PORT = process.env.PORT || 8000;
+const PORT = process.env.PORT || 5000;
 
 // Trust Cloud Run's proxy (for correct protocol/host in URLs)
 app.set('trust proxy', true);
@@ -1018,7 +1018,9 @@ app.post('/generate_heatmap_vizzion', upload.none(), async (req, res) => {
             d.state,
             d.route as direction,
             d.mm,
-            q.image_status AS val
+            q.image_status AS val,
+            d.vehicleid,
+            FORMAT_TIMESTAMP('%Y-%m-%d %H:%M:%E*S UTC', d.time) as original_time
         FROM \`tmc-dashboards.vizzion.vizzion_drives\` d
         LEFT JOIN \`tmc-dashboards.vizzion.vizzion_drives_queue\` q ON d.vehicleid = q.vehicleid AND d.time = q.time
         WHERE d.state = @state
@@ -1064,6 +1066,66 @@ app.post('/generate_heatmap_vizzion', upload.none(), async (req, res) => {
         res.json(mappedRows);
     } catch (e) {
         console.error("Vizzion Query Error:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/get_vizzion_images', async (req, res) => {
+    try {
+        const { vehicleid, time } = req.query;
+        if (!vehicleid || !time) {
+            return res.status(400).json({ error: "vehicleid and time required" });
+        }
+
+        const query = `
+        SELECT
+          img.gcs_path,
+          CONCAT(img.vehicleid_morphed, ' ', img.state, ' ', img.route, ' MM ', img.mm, ' UTC Time: ',img.time, ' (', img.speed_mph, ' mph)') AS name
+        FROM \`tmc-dashboards.vizzion.vizzion_drives\` d
+        LEFT JOIN \`tmc-dashboards.vizzion.vizzion_drives_queue\` q ON d.vehicleid = q.vehicleid AND d.time = q.time
+        LEFT JOIN \`tmc-dashboards.vizzion.vizzion_streams\` img 
+          ON d.vehicleid = img.vehicleid 
+          AND img.time >= d.time AND img.time < TIMESTAMP_ADD(d.time, INTERVAL d.seconds SECOND)
+          AND d.route = img.route
+        WHERE d.vehicleid = @vehicleid
+          AND d.time = TIMESTAMP(@time)
+        ORDER BY img.time ASC
+        `;
+        
+        const options = {
+            query: query,
+            params: {
+                vehicleid: parseInt(vehicleid, 10),
+                time: time
+            }
+        };
+
+        const [job] = await bigquery.createQueryJob(options);
+        const [rows] = await job.getQueryResults();
+
+        const host = req.get('host');
+        const protocol = req.protocol;
+        const baseUrl = `${protocol}://${host}`;
+
+        const images = [];
+        for (const row of rows) {
+            if (row.gcs_path) {
+                const gcsMatch = row.gcs_path.match(/gs:\/\/([^\/]+)\/(.+)/);
+                if (gcsMatch) {
+                    const bkt = gcsMatch[1];
+                    const pth = gcsMatch[2];
+                    
+                    images.push({
+                        url: `${baseUrl}/api/vizzion-image-proxy?bucket=${encodeURIComponent(bkt)}&path=${encodeURIComponent(pth)}`,
+                        name: row.name
+                    });
+                }
+            }
+        }
+
+        res.json({ images });
+    } catch (e) {
+        console.error("Error in /api/get_vizzion_images:", e);
         res.status(500).json({ error: e.message });
     }
 });
@@ -1169,6 +1231,33 @@ app.get('/api/image-proxy', async (req, res) => {
             .pipe(res);
     } catch (e) {
         console.error(`[proxy] Error for ${blobPath}:`, e);
+        res.status(500).send(e.message);
+    }
+});
+
+app.get('/api/vizzion-image-proxy', async (req, res) => {
+    const { bucket, path: blobPath } = req.query;
+    if (!blobPath || !bucket) return res.status(400).send("Bucket and Path required");
+
+    try {
+        const file = storage.bucket(bucket).file(blobPath);
+        const [exists] = await file.exists();
+        if (!exists) {
+            console.warn(`[vizzion proxy] File not found: gs://${bucket}/${blobPath}`);
+            return res.status(404).send("Not found");
+        }
+
+        res.setHeader('Content-Type', 'image/jpeg');
+        res.setHeader('Cache-Control', 'public, max-age=3600'); // 1 hour cache
+
+        file.createReadStream()
+            .on('error', (err) => {
+                console.error(`[vizzion proxy] Stream error for ${blobPath}:`, err);
+                if (!res.headersSent) res.status(500).send(err.message);
+            })
+            .pipe(res);
+    } catch (e) {
+        console.error(`[vizzion proxy] Error for ${blobPath}:`, e);
         res.status(500).send(e.message);
     }
 });
