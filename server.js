@@ -1073,10 +1073,13 @@ app.post('/generate_heatmap_vizzion', upload.none(), async (req, res) => {
 
 app.get('/api/get_vizzion_images', async (req, res) => {
     try {
-        const { vehicleid, time, mm, state, route } = req.query;
+        const { vehicleid, time, mm, state, route, timezone } = req.query;
         if (!vehicleid || !time) {
             return res.status(400).json({ error: "vehicleid and time required" });
         }
+
+        const tzMode = timezone || 'EST';
+        const tzOffset = TZ_OFFSETS[tzMode] || '-05:00';
 
         // Determine possible directions based on the base route
         // This is a simple heuristic. For more accuracy, we could pass directions from frontend.
@@ -1095,7 +1098,7 @@ app.get('/api/get_vizzion_images', async (req, res) => {
         const query = `
         SELECT
           img.gcs_path,
-          CONCAT(img.vehicleid_morphed, ' ', img.state, ' ', img.route, ' MM ', img.mm, ' UTC Time: ',img.time, ' (', img.speed_mph, ' mph)') AS name
+          CONCAT(img.vehicleid_morphed, ' ', img.state, ' ', img.route, ' MM ', img.mm, ' ${tzMode} Time: ', FORMAT_TIMESTAMP('%Y-%m-%d %H:%M:%S', img.time, '${tzOffset}'), ' (', img.speed_mph, ' mph)') AS name
         FROM \`tmc-dashboards.vizzion.vizzion_drives\` d
         LEFT JOIN \`tmc-dashboards.vizzion.vizzion_drives_queue\` q ON d.vehicleid = q.vehicleid AND d.time = q.time
         LEFT JOIN \`tmc-dashboards.vizzion.vizzion_streams\` img 
