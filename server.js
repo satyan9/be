@@ -1019,8 +1019,9 @@ app.post('/generate_heatmap_vizzion', upload.none(), async (req, res) => {
             d.route as direction,
             d.mm,
             q.image_status AS val,
-            d.vehicleid,
-            FORMAT_TIMESTAMP('%Y-%m-%d %H:%M:%E*S UTC', d.time) as original_time
+            q.vehicleid,
+            FORMAT_TIMESTAMP('%Y-%m-%d %H:%M:%E*S UTC', d.time) as original_time,
+            q.seconds
         FROM \`tmc-dashboards.vizzion.vizzion_drives\` d
         LEFT JOIN \`tmc-dashboards.vizzion.vizzion_drives_queue\` q ON d.vehicleid = q.vehicleid AND d.time = q.time
         WHERE d.state = @state
