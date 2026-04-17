@@ -1007,6 +1007,7 @@ app.post('/generate_heatmap_vizzion', upload.none(), async (req, res) => {
 
         const query = `
         SELECT
+        distinct d.vehicleid,
             UNIX_SECONDS(
                 TIMESTAMP_SECONDS(
                     DIV(
@@ -1019,7 +1020,7 @@ app.post('/generate_heatmap_vizzion', upload.none(), async (req, res) => {
             d.route as direction,
             d.mm,
             q.image_status AS val,
-            q.vehicleid,
+            CONCAT("PU", (1000000 - (2*d.vehicleid + 100))) AS vehicleid_morphed,
             FORMAT_TIMESTAMP('%Y-%m-%d %H:%M:%E*S UTC', d.time) as original_time,
             q.seconds
         FROM \`tmc-dashboards.vizzion.vizzion_drives\` d
@@ -1028,7 +1029,6 @@ app.post('/generate_heatmap_vizzion', upload.none(), async (req, res) => {
           AND d.mm BETWEEN @min_mm AND @max_mm
           AND TRIM(d.route) = @direction
           AND d.time >= TIMESTAMP(@start_date, @tzOffset) AND d.time < TIMESTAMP(@end_date, @tzOffset)
-        ORDER BY d.time ASC
         `;
 
         const options = {
@@ -1097,8 +1097,9 @@ app.get('/api/get_vizzion_images', async (req, res) => {
 
         const query = `
         SELECT
+        distinct d.vehicleid,
           img.gcs_path,
-          CONCAT(img.vehicleid_morphed, ' ', img.state, ' ', img.route, ' MM ', img.mm, ' ${tzMode} Time: ', FORMAT_TIMESTAMP('%Y-%m-%d %H:%M:%S', img.time, '${tzOffset}'), ' (', img.speed_mph, ' mph)') AS name
+          CONCAT(img.vehicleid_morphed, ' ', img.state, ' ', img.route, ' MM ', d.mm, ' ${tzMode} Time: ', FORMAT_TIMESTAMP('%Y-%m-%d %H:%M:%S', img.time, '${tzOffset}'), ' (', img.speed_mph, ' mph)') AS name
         FROM \`tmc-dashboards.vizzion.vizzion_drives\` d
         LEFT JOIN \`tmc-dashboards.vizzion.vizzion_drives_queue\` q ON d.vehicleid = q.vehicleid AND d.time = q.time
         LEFT JOIN \`tmc-dashboards.vizzion.vizzion_streams\` img 
