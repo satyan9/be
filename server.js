@@ -1099,7 +1099,8 @@ app.get('/api/get_vizzion_images', async (req, res) => {
         SELECT
         distinct d.vehicleid,
           img.gcs_path,
-          CONCAT(img.vehicleid_morphed, ' ', img.state, ' ', img.route, ' MM ', d.mm, ' ${tzMode} Time: ', FORMAT_TIMESTAMP('%Y-%m-%d %H:%M:%S', img.time, '${tzOffset}'), ' (', img.speed_mph, ' mph)') AS name
+          CONCAT(img.vehicleid_morphed, ' ', img.state, ' ', img.route, ' MM ', img.mm, ' ${tzMode} Time: ', FORMAT_TIMESTAMP('%Y-%m-%d %H:%M:%S', img.time, '${tzOffset}'), ' (', img.speed_mph, ' mph)') AS name,
+          img.mm
         FROM \`tmc-dashboards.vizzion.vizzion_drives\` d
         LEFT JOIN \`tmc-dashboards.vizzion.vizzion_drives_queue\` q ON d.vehicleid = q.vehicleid AND d.time = q.time
         LEFT JOIN \`tmc-dashboards.vizzion.vizzion_streams\` img 
@@ -1112,6 +1113,7 @@ app.get('/api/get_vizzion_images', async (req, res) => {
           AND q.image_status = 2
           ${routeFilter}
           AND DATE(d.time) = DATE(@time)
+          order by img.mm
         `;
         
         const options = {
