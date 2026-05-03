@@ -1347,11 +1347,11 @@ app.get('/api/heatmap/getHaas/:state/:roadName/:startDate/:endDate/:startmm/:end
         const query = `
 WITH matched AS (
   SELECT p.timestamp, p.is_active, p.speed, poly.mm, poly.route AS roadName,
-    t.device_name, t.thingname, t.type,
-    ROW_NUMBER() OVER (PARTITION BY p.timestamp, t.device_name ORDER BY poly.mm ASC) AS rn
+    t.name AS device_name, t.name AS thingname, t.type,
+    ROW_NUMBER() OVER (PARTITION BY p.timestamp, t.name ORDER BY poly.mm ASC) AS rn
   FROM \`tmc-dashboards.haas.point\` p
   INNER JOIN \`tmc-dashboards.shapefiles.smart_polys\` poly ON ST_Contains(poly.geog, ST_GEOGPOINT(p.long, p.lat))
-  INNER JOIN \`tmc-dashboards.haas.thing\` t ON t.external_id = p.external_id
+  INNER JOIN \`tmc-dashboards.haas.haas_thing\` t ON t.external_id = p.external_id
   WHERE p.timestamp >= TIMESTAMP('${startDate} 00:00:00', '${tzOffset}')
     AND p.timestamp < TIMESTAMP('${endDate} 00:00:00', '${tzOffset}')
     AND poly.route = '${roadName}' AND poly.mm >= ${parseFloat(startmm)}
@@ -1386,11 +1386,11 @@ app.get('/api/heatmap/getHaasLocation/:state/:roadName/:startDate/:endDate/:star
         const query = `
 WITH matched AS (
   SELECT l.start_time, l.end_time, l.is_active, l.type, l.street_name,
-    poly.mm, poly.route AS roadName, t.device_name, t.thingname,
+    poly.mm, poly.route AS roadName, t.name AS device_name, t.name AS thingname,
     ROW_NUMBER() OVER (PARTITION BY l.external_id ORDER BY poly.mm ASC) AS rn
   FROM \`tmc-dashboards.haas.location\` l
   INNER JOIN \`tmc-dashboards.shapefiles.smart_polys\` poly ON ST_Contains(poly.geog, ST_GEOGPOINT(l.long, l.lat))
-  INNER JOIN \`tmc-dashboards.haas.thing\` t ON t.external_id = SPLIT(l.external_id, '-')[OFFSET(0)]
+  INNER JOIN \`tmc-dashboards.haas.haas_thing\` t ON t.external_id = SPLIT(l.external_id, '-')[OFFSET(0)]
   WHERE l.start_time >= TIMESTAMP('${startDate} 00:00:00', '${tzOffset}')
     AND l.start_time < TIMESTAMP('${endDate} 23:59:59', '${tzOffset}')
     AND poly.route = '${roadName}' AND poly.mm >= ${parseFloat(startmm)}
@@ -1433,3 +1433,4 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
+
