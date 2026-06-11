@@ -292,7 +292,9 @@ async function handleCarRequest(state, roadName, startDate, endDate, startmm, en
        ) * ${binSeconds}
      )
    ) AS bin,
-       ROUND(AVG(medSpeed) * 0.62137119) as mph
+       ROUND(AVG(medSpeed) * 0.62137119) as mph,
+       ST_Y(ST_CENTROID(ANY_VALUE(p.geog))) AS lat,
+       ST_X(ST_CENTROID(ANY_VALUE(p.geog))) AS lon
     FROM
       smart_poly.movement_agg a
     LEFT JOIN
@@ -330,6 +332,8 @@ async function handleCarRequest(state, roadName, startDate, endDate, startmm, en
                 bin: row.bin,
                 mph: row.mph,
                 event_type: 'car',
+                lat: row.lat,
+                lon: row.lon,
                 mmStep: mmPrecision === 0 ? 1.0 : 0.1,
                 binStep: binSeconds
             };
@@ -413,7 +417,9 @@ async function handleTruckRequest(state, roadName, startDate, endDate, startmm, 
        ) * ${binSeconds}
      )
    ) AS bin,
-       ROUND(AVG(medSpeed) * 0.62137119) as mph
+       ROUND(AVG(medSpeed) * 0.62137119) as mph,    
+       ST_Y(ST_CENTROID(ANY_VALUE(p.geog))) AS lat,
+       ST_X(ST_CENTROID(ANY_VALUE(p.geog))) AS lon
     FROM
       smart_poly.truck_agg a
     LEFT JOIN
@@ -451,6 +457,8 @@ async function handleTruckRequest(state, roadName, startDate, endDate, startmm, 
                 bin: row.bin,
                 mph: row.mph,
                 event_type: 'truck',
+                lat: row.lat,
+                lon: row.lon,
                 mmStep: mmPrecision === 0 ? 1.0 : 0.1,
                 binStep: binSeconds
             };
@@ -1116,7 +1124,7 @@ app.get('/api/get_vizzion_images', async (req, res) => {
           AND DATE(d.time) = DATE(@time)
           order by img.mm
         `;
-        
+
         const options = {
             query: query,
             params: {
@@ -1137,6 +1145,15 @@ app.get('/api/get_vizzion_images', async (req, res) => {
         const [job] = await bigquery.createQueryJob(options);
         const [rows] = await job.getQueryResults();
 
+        // Sort by timestamp extracted from name string
+        rows.sort((a, b) => {
+            const timeA = a.name ? a.name.match(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/) : null;
+            const timeB = b.name ? b.name.match(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/) : null;
+            if (!timeA) return 1;
+            if (!timeB) return -1;
+            return timeA[0].localeCompare(timeB[0]);
+        });
+
         const host = req.get('host');
         const protocol = req.protocol;
         const baseUrl = `${protocol}://${host}`;
@@ -1148,7 +1165,7 @@ app.get('/api/get_vizzion_images', async (req, res) => {
                 if (gcsMatch) {
                     const bkt = gcsMatch[1];
                     const pth = gcsMatch[2];
-                    
+
                     images.push({
                         url: `${baseUrl}/api/vizzion-image-proxy?bucket=${encodeURIComponent(bkt)}&path=${encodeURIComponent(pth)}`,
                         name: row.name
