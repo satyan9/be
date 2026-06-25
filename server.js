@@ -11,12 +11,11 @@ const multer = require('multer');
 
 const upload = multer();
 
-
 const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Trust Cloud Run's proxy (for correct protocol/host in URLs)
-app.set('trust proxy', true);
+app.set('trust proxy', true);   
 
 // Increase timeout for long-running BigQuery streams (10 minutes)
 const TIMEOUT_MS = 10 * 60 * 1000;
@@ -1125,7 +1124,7 @@ app.get('/api/get_vizzion_images', async (req, res) => {
           AND DATE(d.time) = DATE(@time)
           ORDER BY img.mm
         `;
-
+        
         const options = {
             query: query,
             params: {
@@ -1166,7 +1165,7 @@ app.get('/api/get_vizzion_images', async (req, res) => {
                 if (gcsMatch) {
                     const bkt = gcsMatch[1];
                     const pth = gcsMatch[2];
-
+                    
                     images.push({
                         url: `${baseUrl}/api/vizzion-image-proxy?bucket=${encodeURIComponent(bkt)}&path=${encodeURIComponent(pth)}`,
                         name: row.name
