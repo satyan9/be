@@ -1122,7 +1122,7 @@ app.get('/api/get_vizzion_images', async (req, res) => {
           AND q.image_status = 2
           ${routeFilter}
           AND DATE(d.time) = DATE(@time)
-          order by img.mm
+          ORDER BY img.mm
         `;
 
         const options = {
@@ -1435,6 +1435,83 @@ FROM matched WHERE rn = 1 ORDER BY start_time ASC`;
     } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
+// EXPORT BY DIRECTION: GET /api/heatmap/export
+app.get('/api/heatmap/export', async (req, res) => {
+    try {
+        const { state, roadName, startDate, endDate, startmm, endmm, timezone } = req.query;
+        const tzOffset = TZ_OFFSETS[timezone] || '-05:00';
+
+        const startmm_f = parseFloat(startmm);
+        const endmm_f = parseFloat(endmm);
+        const endDatePlus = moment(endDate).add(1, 'day').format('YYYY-MM-DD');
+
+        const query = `
+        WITH car AS (
+          SELECT
+             ROUND(mm, 1) AS mm,
+             route AS direction,
+             TIMESTAMP_TRUNC(TIMESTAMP(DATETIME(timestamp, '${tzOffset}')), HOUR) AS ts,
+             ROUND(AVG(medSpeed) * 0.62137119, 1) AS car_speed
+          FROM
+            smart_poly.movement_agg a
+          LEFT JOIN
+            shapefiles.smart_polys p ON p.id = a.id
+          WHERE timestamp >= TIMESTAMP('${startDate}', '${tzOffset}') AND timestamp < TIMESTAMP('${endDatePlus}', '${tzOffset}')
+            AND state = '${state}' AND STARTS_WITH(route, '${roadName} ') AND mm BETWEEN ${startmm_f} AND ${endmm_f}
+          GROUP BY mm, direction, ts
+        ),
+        truck AS (
+          SELECT
+             ROUND(mm, 1) AS mm,
+             route AS direction,
+             TIMESTAMP_TRUNC(TIMESTAMP(DATETIME(timestamp, '${tzOffset}')), HOUR) AS ts,
+             ROUND(AVG(medSpeed) * 0.62137119, 1) AS truck_speed
+          FROM
+            smart_poly.truck_agg a
+          LEFT JOIN
+            shapefiles.smart_polys p ON p.id = a.id
+          WHERE timestamp >= TIMESTAMP('${startDate}', '${tzOffset}') AND timestamp < TIMESTAMP('${endDatePlus}', '${tzOffset}')
+            AND state = '${state}' AND STARTS_WITH(route, '${roadName} ') AND mm BETWEEN ${startmm_f} AND ${endmm_f}
+          GROUP BY mm, direction, ts
+        )
+        SELECT
+          COALESCE(car.mm, truck.mm) AS mm,
+          COALESCE(car.direction, truck.direction) AS direction,
+          COALESCE(car.ts, truck.ts) AS ts,
+          car.car_speed,
+          truck.truck_speed
+        FROM car
+        FULL OUTER JOIN truck
+          ON car.mm = truck.mm AND car.ts = truck.ts AND car.direction = truck.direction
+        ORDER BY direction, ts, mm ASC
+        `;
+
+        console.log(`Export by direction - route prefix='${roadName} ', dates=${startDate} to ${endDatePlus}`);
+        const [rows] = await bigquery.query({ query });
+        console.log(`Export - Got ${rows.length} rows`);
+
+        // Group rows by direction (e.g. "I-70 E", "I-70 W")
+        const grouped = {};
+        rows.forEach(row => {
+            const dir = row.direction;
+            if (!grouped[dir]) grouped[dir] = [];
+            const d = new Date(row.ts.value);
+            grouped[dir].push({
+                mm: row.mm,
+                date: d.toISOString().slice(0, 10),
+                hour: String(d.getUTCHours()).padStart(2, '0'),
+                car_speed: row.car_speed != null ? row.car_speed : '',
+                truck_speed: row.truck_speed != null ? row.truck_speed : ''
+            });
+        });
+
+        res.json({ directions: grouped });
+
+    } catch (e) {
+        console.error("Export Error:", e.message);
+        res.status(500).json({ error: e.message });
+    }
+});
 const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
